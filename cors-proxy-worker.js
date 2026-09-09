@@ -26,8 +26,12 @@ export default {
       });
     }
 
+    // 过滤掉逐跳(hop-by-hop)头，避免 kdocs 因 host/content-length 不匹配而拒绝
+    const skip = new Set(['host', 'content-length', 'connection', 'keep-alive', 'transfer-encoding', 'upgrade']);
     const headers = {};
-    for (const [k, v] of request.headers) headers[k] = v;
+    for (const [k, v] of request.headers) {
+      if (!skip.has(k.toLowerCase())) headers[k] = v;
+    }
     const init = { method: request.method, headers };
     if (request.method !== 'GET' && request.method !== 'HEAD') {
       init.body = await request.arrayBuffer();

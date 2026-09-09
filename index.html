@@ -391,7 +391,11 @@ const AirScriptAdapter={
   endpoint(){
     const c=SET.cloud; let url=(c.webhook||'').trim();
     const proxy=(c.proxy||'').trim();
-    if(proxy){ url = proxy + (proxy.indexOf('?')>=0?'&':'?') + 'target=' + encodeURIComponent(url); }
+    if(proxy){
+      // 去掉 proxy 中可能已带的 ?target= 残留，统一以「base?target=<编码webhook>」形式拼，避免重复 target 参数
+      const base = proxy.split('?')[0].replace(/\/+$/,'');
+      return base + '?target=' + encodeURIComponent(url);
+    }
     return url;
   },
   async call(argv){

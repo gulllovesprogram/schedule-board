@@ -20,17 +20,44 @@
    - 生成 **脚本令牌(APIToken)**
 
 **第 2 步：部署一个免费 CORS 代理（Cloudflare Worker）**
-浏览器无法直接访问 kdocs，需要一个服务端转发：
-1. 打开 https://workers.cloudflare.com/ 登录（免费）。
-2. 新建 Worker，把 `cors-proxy-worker.js` 内容粘贴进去，保存。
-3. 记下地址，形如 `https://schedule-proxy.你的子域.workers.dev`。
+浏览器出于安全策略（CORS）无法直接访问 kdocs，需要一个服务端帮我们转发请求。
+Cloudflare Worker 是免费、无服务器的方案（免费套餐每天 10 万次请求，个人完全够用）。
+
+> 代码已备好：仓库里的 `cors-proxy-worker.js`。
+
+**① 注册 / 登录**
+- 打开 https://workers.cloudflare.com/ → 点右上角「登录 / Sign in」。
+- 没有账号就点「注册 / Sign up」（用邮箱即可，免费版不需要绑卡）。
+
+**② 设置你的 workers.dev 子域（仅第一次需要）**
+- 首次进入会让设置一个**子域前缀**，例如填 `my-schedule`，确认后你会拥有 `my-schedule.workers.dev` 这个域名空间。
+- 以后每个 Worker 都会挂在这个域下，如 `https://某个名字.my-schedule.workers.dev`。
+
+**③ 新建 Worker**
+- 在控制台首页点 **「Create Worker」/「创建 Worker」**（或「Workers 」→「Create Application」→「Worker」）。
+- 给 Worker 起个名字，例如 `schedule-proxy`，点 **「部署 / Deploy」**（先随便部署一版占位也行）。
+
+**④ 粘贴代码**
+- 进入该 Worker 的 **「编辑代码 / Quick Edit / Code」** 页面。
+- 左侧代码编辑器里默认有一段 `export default { ... }` 的示例，把它**整段删除**。
+- 打开本仓库的 `cors-proxy-worker.js`，**全选复制**其全部内容，粘贴进编辑器。
+- 右上角点 **「保存并部署 / Save and Deploy」**。
+
+**⑤ 拿到你的代理地址**
+- 部署成功后，页面会显示类似：
+  `https://schedule-proxy.<你的子域>.workers.dev`
+- 这就是你的 CORS 代理地址，复制保存好。
+
+**⑥ 先验证代理活着（可选但推荐）**
+- 浏览器直接打开：`https://schedule-proxy.<你的子域>.workers.dev/`
+- 若显示 `missing target param` 字样，说明 Worker 已正常启动（它要求带 `target=` 参数，空跑就报这个，属正常）。
 
 **第 3 步：在看板网页里填**
 打开本页 → 侧栏「☁️ WPS 多维表格同步」开关 → 填入：
 - ① Webhook 地址：第 1 步复制的 webhook 链接
 - ② AirScript 令牌：第 1 步生成的 APIToken
 - ③ 表名：日程（默认）
-- ④ CORS 代理地址：`https://schedule-proxy.你的子域.workers.dev/?target=`
+- ④ CORS 代理地址：`https://schedule-proxy.你的子域.workers.dev/`（末尾带不带 `?target=` 均可，代码会自动处理）
 点「连接测试」。成功后，任何增删改都会实时写进你的多维表格；换设备打开同一链接即同步。
 
 > 本地模式始终保留兜底：代理或网络异常时，数据先存浏览器，不丢。
