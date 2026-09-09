@@ -37,10 +37,13 @@ export default {
       init.body = await request.arrayBuffer();
     }
     const resp = await fetch(target, init);
+    // 先完整读取 body，确保错误响应体也能被浏览器看到
+    const body = await resp.arrayBuffer();
     const out = new Headers(resp.headers);
     out.set('Access-Control-Allow-Origin', '*');
     out.set('Access-Control-Allow-Methods', 'POST, GET, OPTIONS');
     out.set('Access-Control-Allow-Headers', '*');
-    return new Response(resp.body, { status: resp.status, headers: out });
+    out.set('X-Proxy-Status', resp.status.toString());
+    return new Response(body, { status: resp.status, headers: out });
   }
 };
