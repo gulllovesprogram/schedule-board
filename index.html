@@ -413,11 +413,11 @@ const AirScriptAdapter={
       const resText = await res.text().catch(()=>'');
       if(!res.ok){
         const preview = resText ? (resText.slice(0,200).replace(/\s+/g,' ')) : '无响应体';
-        throw new Error('HTTP '+res.status+' · '+preview);
+        const dbg = res.headers.get('X-Proxy-Debug') || '';
+        throw new Error('HTTP '+res.status+' · '+preview+(dbg?' · Worker收到:'+dbg:''));
       }
       const j = (resText?JSON.parse(resText):null);
       if(!j) throw new Error('返回为空');
-      if(j.error) throw new Error(j.error);
       if(j.error) throw new Error(j.error);
       return (j.data && j.data.result!==undefined) ? j.data.result : null;
     } finally { clearTimeout(timer); }
