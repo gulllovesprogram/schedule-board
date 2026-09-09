@@ -410,8 +410,14 @@ const AirScriptAdapter={
         signal: (ctrl?ctrl.signal:undefined)
       });
       clearTimeout(timer);
-      if(!res.ok) throw new Error('HTTP '+res.status);
-      const j = await res.json().catch(()=>({error:'返回非 JSON'}));
+      const resText = await res.text().catch(()=>'');
+      if(!res.ok){
+        const preview = resText ? (resText.slice(0,200).replace(/\s+/g,' ')) : '无响应体';
+        throw new Error('HTTP '+res.status+' · '+preview);
+      }
+      const j = (resText?JSON.parse(resText):null);
+      if(!j) throw new Error('返回为空');
+      if(j.error) throw new Error(j.error);
       if(j.error) throw new Error(j.error);
       return (j.data && j.data.result!==undefined) ? j.data.result : null;
     } finally { clearTimeout(timer); }
@@ -868,7 +874,12 @@ async function connectCloud(){
     const a=await AirScriptAdapter.load();
     cloudStatus('已连接 ✓ 数据将实时同步到你的多维表格','ok');
     return true;
-  }catch(e){cloudStatus('连接失败：'+(e&&e.message||e)+'（将使用本地存储）','err');return false;}
+  }catch(e){
+    const msg=(e&&e.message)||String(e)||'未知错误';
+    cloudStatus('连接失败：'+msg+'（将使用本地存储）','err');
+    console.error('AirScript连接失败',e);
+    return false;
+  }
 }
 function applyCloudUI(){
   document.getElementById('cUrl').value=SET.cloud.webhook||'';
