@@ -26,24 +26,54 @@ export default {
       });
     }
 
-    // 过滤掉逐跳(hop-by-hop)头，避免 kdocs 因 host/content-length 不匹配而拒绝
+    // 读取 body（非 GET/HEAD 请求）
+    let body = null;
+    if (request.method !== 'GET' && request.method !== 'HEAD') {
+      body = await request.arrayBuffer();
+    }
+
+    // 重建 headers：只过滤 hop-by-hop 头，其余原样转发
     const skip = new Set(['host', 'content-length', 'connection', 'keep-alive', 'transfer-encoding', 'upgrade']);
     const headers = {};
     for (const [k, v] of request.headers) {
       if (!skip.has(k.toLowerCase())) headers[k] = v;
     }
-    const init = { method: request.method, headers };
-    if (request.method !== 'GET' && request.method !== 'HEAD') {
-      init.body = await request.arrayBuffer();
+
+    // 调试信息（会返回给浏览器，方便排查）
+    const debug = {
+      method: request.method,
+      target: target,
+      hasToken: !!headers['airscript-token'],
+      hasContentType: !!headers['content-type'],
+      bodyLen: body ? body.byteLength : 0
+    };
+
+    let resp;
+    let fetchErr = '';
+    try {
+      resp = await fetch(target, { method: request.method, headers, body });
+    } catch (e) {
+      fetchErr = String(e.message || e);
+      return new Response('Worker fetch error: ' + fetchErr, {
+        status: 502,
+        headers: {
+          'Access-Control-Allow-Origin': '*',
+          'Access-Control-Allow-Methods': 'POST, GET, OPTIONS',
+          'Access-Control-Allow-Headers': '*',
+          'X-Proxy-Debug': JSON.stringify(debug),
+          'X-Proxy-Error': fetchErr
+        }
+      });
     }
-    const resp = await fetch(target, init);
+
     // 先完整读取 body，确保错误响应体也能被浏览器看到
-    const body = await resp.arrayBuffer();
+    const respBody = await resp.arrayBuffer();
     const out = new Headers(resp.headers);
     out.set('Access-Control-Allow-Origin', '*');
     out.set('Access-Control-Allow-Methods', 'POST, GET, OPTIONS');
     out.set('Access-Control-Allow-Headers', '*');
     out.set('X-Proxy-Status', resp.status.toString());
-    return new Response(body, { status: resp.status, headers: out });
+    out.set('X-Proxy-Debug', JSON.stringify(debug));
+    return new Response(respBody, { status: resp.status, headers: out });
   }
 };
