@@ -401,7 +401,13 @@ const AirScriptAdapter={
   async call(argv){
     const c=SET.cloud;
     const ctrl = (window.AbortController)? new AbortController() : null;
-    const timer = setTimeout(()=>{ if(ctrl&&ctrl.abort) ctrl.abort(); }, 20000);
+    const TIMEOUT = 60000;
+    const timer = setTimeout(()=>{
+      if(ctrl&&ctrl.abort){
+        ctrl.abort();
+        console.warn('AirScript request timeout after '+TIMEOUT+'ms');
+      }
+    }, TIMEOUT);
     try{
       const res = await fetch(this.endpoint(), {
         method:'POST',
@@ -420,6 +426,9 @@ const AirScriptAdapter={
       if(!j) throw new Error('返回为空');
       if(j.error) throw new Error(j.error);
       return (j.data && j.data.result!==undefined) ? j.data.result : null;
+    }catch(e){
+      if(e && e.name==='AbortError') throw new Error('请求超时：Worker 或 kdocs 在 '+TIMEOUT/1000+' 秒内未响应，请检查 Worker 是否卡住');
+      throw e;
     } finally { clearTimeout(timer); }
   },
   async load(){
