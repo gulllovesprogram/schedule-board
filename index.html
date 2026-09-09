@@ -250,10 +250,17 @@
     <div class="side-set" style="padding-top:0">
       <div class="cloud-toggle" id="cloudToggle"><span class="sw" id="cloudSw"></span><span>☁️ WPS 多维表格同步</span></div>
       <div class="cloud-box" id="cloudBox">
-        <input id="cUrl" placeholder="多维表格分享链接（kdocs.cn/l/...）" />
-        <input id="cSdk" placeholder="SDK 地址（一般用默认即可）" />
+        <div class="lbl">① 脚本 Webhook 地址</div>
+        <input id="cUrl" placeholder="https://www.kdocs.cn/api/v3/ide/file/.../script/.../sync_task" />
+        <div class="lbl">② AirScript 令牌（APIToken）</div>
+        <input id="cToken" type="password" placeholder="脚本令牌" />
+        <div class="lbl">③ 表名（默认「日程」）</div>
+        <input id="cSheet" placeholder="日程" />
+        <div class="lbl">④ CORS 代理地址（可选·解决浏览器跨域）</div>
+        <input id="cProxy" placeholder="https://你的worker.workers.dev/?target=" />
         <button class="cloud-test" id="cloudTest">连接测试</button>
         <div class="cloud-status" id="cloudStatus">开启后，数据实时存到你的多维表格，支持多端编辑。</div>
+        <div class="cloud-help" style="font-size:11px;color:var(--ink-faint);line-height:1.4;margin-top:6px">浏览器直连会被跨域拦截，需在 ① 处填 webhook、② 处填令牌；并在 ④ 填一个 CORS 代理（对话里给了免费 Cloudflare Worker 配置）。本地模式始终可用。</div>
       </div>
     </div>
     <div class="side-actions">
@@ -372,80 +379,64 @@ const TEMPLATES={
 const KEY='j_ai_schedule_board_v4';
 const SET_KEY='j_ai_settings';
 let items=[], curMonth=new Date(), selectedId=null, curView='board';
-let SET={vault:'', cloud:{enabled:false, url:'', sdkUrl:''}};
+let SET={vault:'', cloud:{enabled:false, webhook:'', token:'', sheetName:'日程', proxy:''}};
 
 function uid(){return 'i'+Math.random().toString(36).slice(2,9)+Date.now().toString(36).slice(-3);}
 function uid2(){return 's'+Math.random().toString(36).slice(2,7);}
 
-/* ---------- 云端适配器：WPS 多维表格（WebOfficeSDK / Application.Record.*） ---------- */
-/* 字段以「名字」寻址；无需服务端密钥，靠浏览器已登录的 WPS 会话访问。 */
-const CLOUD_FIELDS=[
-  {name:'任务ID',type:'SingleLineText'},
-  {name:'标题',type:'SingleLineText'},
-  {name:'分类',type:'SingleSelect',items:[{value:'工作'},{value:'备考'},{value:'理财'}]},
-  {name:'截止日期',type:'Date'},
-  {name:'状态',type:'SingleSelect',items:[{value:'进行中'},{value:'已完成'}]},
-  {name:'进度',type:'Number'},
-  {name:'Obsidian',type:'SingleLineText'},
-  {name:'数据',type:'MultiLineText'}
-];
-const WpsAdapter={
-  app:null, sheetId:null,
-  ready(){return !!this.app;},
-  async ensureSheet(){
-    if(this.sheetId) return this.sheetId;
-    let sheets=await this.app.Sheet.GetSheets();
-    let list=Array.isArray(sheets)?sheets:(sheets&&sheets.sheets)||[];
-    let sheet=list.find(s=>s.name&&s.name.indexOf('日程')>=0)||list[0];
-    if(!sheet){
-      const created=await this.app.Sheet.CreateSheet({Name:'日程管理',Fields:CLOUD_FIELDS,Views:[{name:'表格',type:'Grid'},{name:'看板',type:'Kanban'},{name:'日历',type:'Calendar'}]});
-      sheet=created;
-    }
-    this.sheetId=sheet.id; return this.sheetId;
+/* ---------- 云端适配器：WPS 多维表格（AirScript Webhook，无需 SDK / 服务端密钥） ---------- */
+/* 通过《金山文档》AirScript 脚本的 webhook 读写表格；浏览器侧经可选 CORS 代理转发。 */
+const AirScriptAdapter={
+  ready(){const c=SET.cloud||{};return !!(c.enabled&&c.webhook&&c.token);},
+  endpoint(){
+    const c=SET.cloud; let url=(c.webhook||'').trim();
+    const proxy=(c.proxy||'').trim();
+    if(proxy){ url = proxy + (proxy.indexOf('?')>=0?'&':'?') + 'target=' + encodeURIComponent(url); }
+    return url;
+  },
+  async call(argv){
+    const c=SET.cloud;
+    const ctrl = (window.AbortController)? new AbortController() : null;
+    const timer = setTimeout(()=>{ if(ctrl&&ctrl.abort) ctrl.abort(); }, 20000);
+    try{
+      const res = await fetch(this.endpoint(), {
+        method:'POST',
+        headers:{'Content-Type':'application/json','AirScript-Token':(c.token||'').trim()},
+        body: JSON.stringify({Context:{argv:argv}}),
+        signal: (ctrl?ctrl.signal:undefined)
+      });
+      clearTimeout(timer);
+      if(!res.ok) throw new Error('HTTP '+res.status);
+      const j = await res.json().catch(()=>({error:'返回非 JSON'}));
+      if(j.error) throw new Error(j.error);
+      return (j.data && j.data.result!==undefined) ? j.data.result : null;
+    } finally { clearTimeout(timer); }
   },
   async load(){
-    const sid=await this.ensureSheet();
-    const res=await this.app.Record.GetRecords({SheetId:sid});
-    const recs=(res&&res.records)||(res&&res.data&&res.data.records)||[];
-    const out=[];
-    recs.forEach(r=>{const f=r.fields||{}; const raw=f['数据']||''; if(raw){try{const o=JSON.parse(raw); if(o&&o.id) out.push(o);}catch(e){}}});
-    return out;
+    const r = await this.call({action:'load', sheetName:SET.cloud.sheetName||'日程'});
+    try { return JSON.parse(r||'[]'); } catch(e){ return []; }
   },
   async save(arr){
-    const sid=await this.ensureSheet();
-    const res=await this.app.Record.GetRecords({SheetId:sid});
-    const recs=(res&&res.records)||(res&&res.data&&res.data.records)||[];
-    const exist={}; recs.forEach(r=>{const f=r.fields||{}; const id=f['任务ID']||''; if(id) exist[id]=r.id;});
-    const toCreate=[],toUpdate=[],seen=[];
-    arr.forEach(it=>{
-      const status=pct(it)>=100?'已完成':'进行中';
-      const fields={'任务ID':it.id,'标题':it.title,'分类':CATS[it.cat].name,'截止日期':it.due||'','状态':status,'进度':pct(it),'Obsidian':it.obsidianPath||'','数据':JSON.stringify(it)};
-      if(exist[it.id]){toUpdate.push({id:exist[it.id],fields});seen.push(it.id);}
-      else toCreate.push({fields});
-    });
-    const toDelete=Object.keys(exist).filter(id=>seen.indexOf(id)<0);
-    if(toCreate.length) await this.app.Record.CreateRecords({SheetId:sid,Records:toCreate});
-    if(toUpdate.length) await this.app.Record.UpdateRecords({SheetId:sid,Records:toUpdate});
-    if(toDelete.length) await this.app.Record.DeleteRecords({SheetId:sid,RecordIds:toDelete});
+    await this.call({action:'save', sheetName:SET.cloud.sheetName||'日程', tasks:arr});
   }
 };
 
 /* ---------- 存储层（本地 / 云端 可切换） ---------- */
 const Storage={
-  mode(){return (SET.cloud&&SET.cloud.enabled&&WpsAdapter.ready())?'cloud':'local';},
+  mode(){return (SET.cloud&&SET.cloud.enabled&&AirScriptAdapter.ready())?'cloud':'local';},
   async load(){
-    if(this.mode()==='cloud'){ try{const a=await WpsAdapter.load(); if(a&&a.length) return a;}catch(e){console.error(e);toast('云端读取失败，改用本地：'+(e.message||e));} }
+    if(this.mode()==='cloud'){ try{const a=await AirScriptAdapter.load(); if(a&&a.length) return a;}catch(e){console.error(e);toast('云端读取失败，改用本地：'+(e.message||e));} }
     try{const r=localStorage.getItem(KEY);return r?JSON.parse(r):null;}catch(e){return null;}
   },
   async save(arr){
-    if(this.mode()==='cloud'){ try{await WpsAdapter.save(arr); localStorage.setItem(KEY,JSON.stringify(arr)); return;}catch(e){console.error(e);toast('云端保存失败，已存本地：'+(e.message||e));} }
+    if(this.mode()==='cloud'){ try{await AirScriptAdapter.save(arr); localStorage.setItem(KEY,JSON.stringify(arr)); return;}catch(e){console.error(e);toast('云端保存失败，已存本地：'+(e.message||e));} }
     localStorage.setItem(KEY,JSON.stringify(arr));
   }
 };
 
 async function load(){ items=await Storage.load(); if(!items||!items.length) items=seed(); }
 async function save(){ await Storage.save(items); }
-function loadSET(){try{const r=localStorage.getItem(SET_KEY);if(r){const o=JSON.parse(r);SET=Object.assign({vault:'',cloud:{enabled:false,url:'',sdkUrl:''}},o);if(!SET.cloud)SET.cloud={enabled:false,url:'',sdkUrl:''};}}catch(e){}}
+function loadSET(){try{const r=localStorage.getItem(SET_KEY);if(r){const o=JSON.parse(r);SET=Object.assign({vault:'',cloud:{enabled:false,webhook:'',token:'',sheetName:'日程',proxy:''}},o);if(!SET.cloud)SET.cloud={enabled:false,webhook:'',token:'',sheetName:'日程',proxy:''};}}catch(e){}}
 function saveSET(){localStorage.setItem(SET_KEY,JSON.stringify(SET));}
 function todayStr(){return new Date().toISOString().slice(0,10);}
 function daysInMonth(y,m){return new Date(y,m+1,0).getDate();}
@@ -864,36 +855,33 @@ document.getElementById('obsPath').onchange=()=>{const it=items.find(x=>x.id===s
 document.getElementById('obsOpen').onclick=()=>openObsidian(items.find(x=>x.id===selectedId),'open');
 document.getElementById('obsGen').onclick=()=>openObsidian(items.find(x=>x.id===selectedId),'new');
 
-/* ---------- WPS 云端同步 ---------- */
+/* ---------- WPS 云端同步（AirScript Webhook） ---------- */
 function cloudStatus(msg,cls){const el=document.getElementById('cloudStatus');el.textContent=msg;el.className='cloud-status'+(cls?(' '+cls):'');}
-function loadScript(src){return new Promise((res,rej)=>{if(window.WebOfficeSDK)return res();const s=document.createElement('script');s.src=src;s.onload=()=>res();s.onerror=()=>rej(new Error('SDK 加载失败，请检查 SDK 地址'));document.head.appendChild(s);});}
 async function connectCloud(){
-  if(!SET.cloud.url){cloudStatus('请先填写多维表格分享链接','err');return false;}
-  cloudStatus('正在连接 WPS…','');
+  if(!SET.cloud.webhook||!SET.cloud.token){cloudStatus('请先填写 Webhook 地址与令牌','err');return false;}
+  cloudStatus('正在连接并读取多维表格…','');
   try{
-    const sdkUrl=SET.cloud.sdkUrl||'https://cdn.wps.cn/office/sdk/v3/web-office-sdk-v3.4.1.umd.js';
-    if(!window.WebOfficeSDK) await loadScript(sdkUrl);
-    if(!window.WebOfficeSDK) throw new Error('WebOfficeSDK 未加载');
-    const url=SET.cloud.url+(SET.cloud.url.indexOf('?')>=0?'&':'?')+'embed=1&disablePlugins';
-    const instance=window.WebOfficeSDK.config({officeType:'d',url:url,mount:document.getElementById('wpsMount')});
-    await instance.ready();
-    WpsAdapter.app=instance.Application; WpsAdapter.sheetId=null;
+    const a=await AirScriptAdapter.load();
     cloudStatus('已连接 ✓ 数据将实时同步到你的多维表格','ok');
     return true;
   }catch(e){cloudStatus('连接失败：'+(e&&e.message||e)+'（将使用本地存储）','err');return false;}
 }
 function applyCloudUI(){
-  document.getElementById('cUrl').value=SET.cloud.url||'';
-  document.getElementById('cSdk').value=SET.cloud.sdkUrl||'';
+  document.getElementById('cUrl').value=SET.cloud.webhook||'';
+  document.getElementById('cToken').value=SET.cloud.token||'';
+  document.getElementById('cSheet').value=SET.cloud.sheetName||'日程';
+  document.getElementById('cProxy').value=SET.cloud.proxy||'';
   document.getElementById('cloudSw').classList.toggle('on',!!SET.cloud.enabled);
   document.getElementById('cloudBox').classList.toggle('show',!!SET.cloud.enabled);
 }
-function saveCloud(){SET.cloud.url=document.getElementById('cUrl').value.trim();SET.cloud.sdkUrl=document.getElementById('cSdk').value.trim();saveSET();}
+function saveCloud(){SET.cloud.webhook=document.getElementById('cUrl').value.trim();SET.cloud.token=document.getElementById('cToken').value.trim();SET.cloud.sheetName=document.getElementById('cSheet').value.trim()||'日程';SET.cloud.proxy=document.getElementById('cProxy').value.trim();saveSET();}
 document.getElementById('cloudToggle').onclick=()=>{SET.cloud.enabled=!SET.cloud.enabled;saveSET();applyCloudUI();if(SET.cloud.enabled){saveCloud();connectCloud().then(ok=>{if(ok)reloadFromCloud();});}else{cloudStatus('已关闭云端同步，数据保留在本地浏览器。');}};
 document.getElementById('cUrl').onchange=saveCloud;
-document.getElementById('cSdk').onchange=saveCloud;
+document.getElementById('cToken').onchange=saveCloud;
+document.getElementById('cSheet').onchange=saveCloud;
+document.getElementById('cProxy').onchange=saveCloud;
 document.getElementById('cloudTest').onclick=async()=>{saveCloud();const ok=await connectCloud();if(ok)reloadFromCloud();};
-async function reloadFromCloud(){try{const a=await WpsAdapter.load();if(a&&a.length){items=a;render();toast('已从多维表格载入 '+a.length+' 项');}}catch(e){toast('载入失败：'+(e.message||e));}}
+async function reloadFromCloud(){try{const a=await AirScriptAdapter.load();if(a&&a.length){items=a;render();toast('已从多维表格载入 '+a.length+' 项');}}catch(e){toast('载入失败：'+(e.message||e));}}
 
 document.getElementById('detailMask').addEventListener('click',e=>{if(e.target.id==='detailMask')closeDetail();});
 document.getElementById('newMask').addEventListener('click',e=>{if(e.target.id==='newMask')closeNew();});
@@ -901,9 +889,9 @@ document.addEventListener('keydown',e=>{if(e.key==='Escape'){closeDetail();close
 
 (async function init(){
   loadSET(); applyCloudUI();
-  if(SET.cloud.enabled){ await connectCloud(); }
   items=await Storage.load(); if(!items||!items.length) items=seed();
   setView('board');
+  if(SET.cloud.enabled){ connectCloud().then(ok=>{ if(ok) reloadFromCloud(); }); }
 })();
 </script>
 </body>
